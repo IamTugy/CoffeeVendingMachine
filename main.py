@@ -93,17 +93,16 @@ class CoffeeMachine:
             except Exception as err:
                 print(err)
 
-    def get_token(self):
+    async def get_token(self):
         if not self._token_timeout_time or datetime.now() > (self._token_timeout_time + timedelta(minutes=self.TOKEN_TIMEOUT_MINUTES)):
             print('Gets Token')
-            self._token = self._get_token_from_server()
+            self._token = await self._get_token_from_server()
             self._token_timeout_time = datetime.now()
         return self._token
 
     def __init__(self):
         self._token = None
         self._token_timeout_time = None
-        self.get_token()
         self.orders_black_list = []
         self.client = aiohttp.ClientSession()
 
@@ -115,7 +114,7 @@ class CoffeeMachine:
         orders = []
         while not orders:
             print('.', end='')
-            async with self.client.get(ORDERS_URL, headers={"Authorization": f"Bearer {self.get_token()}"}) as response:
+            async with self.client.get(ORDERS_URL, headers={"Authorization": f"Bearer {await self.get_token()}"}) as response:
                 if not response:
                     print('Get Orders Failed!')
                     return []
@@ -133,15 +132,16 @@ class CoffeeMachine:
         return orders
 
     @backoff.on_exception(backoff.constant, ClientResponseError, max_tries=3, interval=1)
-    def bump_order(self, order):
+    async def bump_order(self, order):
         kds_order_id = order['_id']
         async with self.client.get(ORDERS_BUMP_URL,
                                    json={'kds_order_id': kds_order_id},
-                                   headers={"Authorization": f"Bearer {self.get_token()}"},
-                                   raise_for_status=True):
+                                   headers={"Authorization": f"Bearer {await self.get_token()}"},
+                                   raise_for_status=True) as response:
             order_id = order['order_id']
             self.orders_black_list.append(order_id)
             print(f'Bumping {order_id}')
+            return await response.text()
 
     @staticmethod
     async def drop_capsules_from_order(order):
@@ -167,7 +167,7 @@ class CoffeeMachine:
                     continue
 
                 await self.drop_capsules_from_order(order)
-                self.bump_order(order)
+                await self.bump_order(order)
 
                 await asyncio.sleep(USER_GET_FOOD_TIMEOUT)
 
