@@ -104,7 +104,14 @@ class CoffeeMachine:
         self._token = None
         self._token_timeout_time = None
         self.orders_black_list = []
-        self.client = aiohttp.ClientSession()
+        self._client = None
+
+    @property
+    def client(self):
+        if not self._client:
+            self._client = aiohttp.ClientSession()
+            
+        return self._client
 
     async def shutdown(self):
         await self.client.close()
