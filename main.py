@@ -110,7 +110,7 @@ class CoffeeMachine:
     def client(self):
         if not self._client:
             self._client = aiohttp.ClientSession()
-            
+
         return self._client
 
     async def shutdown(self):
@@ -152,16 +152,16 @@ class CoffeeMachine:
 
     @staticmethod
     async def drop_capsules_from_order(order):
-        promises = []
+        promises = set()
         for kds_item in order['kds_items']:
             name = kds_item['name']
             quantity = kds_item['quantity']
             if name in SERVO_PINS.keys():
                 print(f'dropping {quantity} {name}')
-                promises.append(asyncio.to_thread(drop_capsule, name, quantity))
+                promises.add(asyncio.create_task(asyncio.to_thread(drop_capsule, name, quantity)))
 
         cups_count = len(promises)
-        promises.append(asyncio.to_thread(drop_cups, cups_count))
+        promises.add(asyncio.create_task(asyncio.to_thread(drop_cups, cups_count)))
         await asyncio.wait(promises)
 
     async def run(self):
