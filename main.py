@@ -72,7 +72,7 @@ class CoffeeMachine:
     async def _get_token_from_server(self):
         print('Login to kds...')
         url = LOGIN_URL
-        async with self.client.get(url, json={
+        async with self.client.post(url, json={
             'device': 'web',
             'os': 'os',
             'imei': 'imei',
