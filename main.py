@@ -1,8 +1,11 @@
 import json
+import asyncio
 from time import sleep
 from gpiozero import Servo, AngularServo
 from datetime import datetime, timedelta
+import backoff
 import requests
+from requests import HTTPError
 
 PROFILE_ID = None
 POLLING_TIMEOUT = 1  # 2 seconds
@@ -27,15 +30,16 @@ SERVO_PINS = {
 CUP_SERVO_PIN = 4
 
 
-def drop_capsule(capsule_type: str):
+def drop_capsule(capsule_type: str, count: int):
     servo = Servo(SERVO_PINS[capsule_type])
-    servo.min()
-    sleep(0.3)
-    servo.max()
-    sleep(0.5)
+    for _ in range(count):
+        servo.min()
+        sleep(0.3)
+        servo.max()
+        sleep(0.5)
+
     servo.close()
 
-    drop_cup()
 
 
 def get_angular_servo(pin_number: int):
@@ -49,17 +53,19 @@ def get_angular_servo(pin_number: int):
     )
 
 
-def drop_cup():
+def drop_cups(count: int):
     servo = get_angular_servo(pin_number=CUP_SERVO_PIN)
-    servo.min()  # inside
-    sleep(0.3)
-    for _ in range(5):
-        servo.angle = -45
-        sleep(0.1)
-        servo.min()
-        sleep(0.1)
-    servo.max()
-    sleep(0.3)
+    for _ in range(count):
+        servo.min()  # inside
+        sleep(0.3)
+        for _ in range(5):
+            servo.angle = -45
+            sleep(0.1)
+            servo.min()
+            sleep(0.1)
+        servo.max()
+        sleep(0.3)
+
     servo.close()
 
 
@@ -104,11 +110,12 @@ class CoffeeMachine:
         self.get_token()
         self.orders_black_list = []
 
-    def get_orders(self):
+    async def get_orders(self):
         print('Getting Orders', end='')
         orders = []
         while not orders:
             print('.', end='')
+            # TODO: maybe move to async
             res = requests.get(ORDERS_URL,
                                headers={"Authorization": f"Bearer {self.get_token()}"})
             if not res:
@@ -121,18 +128,20 @@ class CoffeeMachine:
             except Exception as err:
                 print(err)
 
-            sleep(POLLING_TIMEOUT)
+            await asyncio.sleep(POLLING_TIMEOUT)
 
         order_ids = ', '.join([str(order['order_id']) for order in orders])
         print('/')
         print(f'Got orders: [{order_ids}]')
         return orders
 
+    @backoff.on_exception(backoff.constant, HTTPError, max_tries=3, interval=1)
     def bump_order(self, order):
         kds_order_id = order['_id']
         res = requests.post(ORDERS_BUMP_URL,
                             json={'kds_order_id': kds_order_id},
                             headers={"Authorization": f"Bearer {self.get_token()}"})
+        res.raise_for_status()
         order_id = order['order_id']
         self.orders_black_list.append(order_id)
         print(f'Bumping {order_id}')
@@ -140,35 +149,35 @@ class CoffeeMachine:
         return res
 
     @staticmethod
-    def drop_capsules_from_order(order):
+    async def drop_capsules_from_order(order):
+        promises = []
         for kds_item in order['kds_items']:
             name = kds_item['name']
             quantity = kds_item['quantity']
             if name in SERVO_PINS.keys():
-                for _ in range(quantity):
-                    print(f'dropping {name}')
-                    drop_capsule(name)
+                print(f'dropping {quantity} {name}')
+                promises.append(asyncio.to_thread(drop_capsule, name, quantity))
 
-    def run(self):
+        cups_count = len(promises)
+        promises.append(asyncio.to_thread(drop_cups, cups_count))
+        await asyncio.wait(promises)
+
+    async def run(self):
         while True:
-            orders = self.get_orders()
+            orders = await self.get_orders()
             for order in orders:
                 order_id = order['order_id']
                 print(f'Reviewing order: {order_id}')
                 if order_id in self.orders_black_list:
                     continue
 
-                self.drop_capsules_from_order(order)
+                await self.drop_capsules_from_order(order)
+                self.bump_order(order)
 
-                tries = 3
-                while (self.bump_order(order).status_code != 200) and tries:
-                    print('Retrying to bump order..')
-                    tries -= 1
+                await asyncio.sleep(USER_GET_FOOD_TIMEOUT)
 
-                sleep(USER_GET_FOOD_TIMEOUT)
-
-            sleep(POLLING_TIMEOUT)
+            await asyncio.sleep(POLLING_TIMEOUT)
 
 
 if __name__ == '__main__':
-    CoffeeMachine().run()
+    asyncio.run(CoffeeMachine().run())
