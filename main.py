@@ -141,10 +141,10 @@ class CoffeeMachine:
     @backoff.on_exception(backoff.constant, ClientResponseError, max_tries=3, interval=1)
     async def bump_order(self, order):
         kds_order_id = order['_id']
-        async with self.client.get(ORDERS_BUMP_URL,
-                                   json={'kds_order_id': kds_order_id},
-                                   headers={"Authorization": f"Bearer {await self.get_token()}"},
-                                   raise_for_status=True) as response:
+        async with self.client.post(ORDERS_BUMP_URL,
+                                    json={'kds_order_id': kds_order_id},
+                                    headers={"Authorization": f"Bearer {await self.get_token()}"},
+                                    raise_for_status=True) as response:
             order_id = order['order_id']
             self.orders_black_list.append(order_id)
             print(f'Bumping {order_id}')
