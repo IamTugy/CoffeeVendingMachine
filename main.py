@@ -1,16 +1,15 @@
-import json
 import asyncio
 from time import sleep
+
+from aiohttp import ClientResponseError
 from gpiozero import Servo, AngularServo
 from datetime import datetime, timedelta
 import backoff
-import requests
-from requests import HTTPError
+import aiohttp
 
 PROFILE_ID = None
 POLLING_TIMEOUT = 1  # 2 seconds
 USER_GET_FOOD_TIMEOUT = 5  # seconds
-
 
 RISTRETTO = 'Ristretto'
 ISPIRAZIONE = 'Ispirazione'
@@ -19,7 +18,6 @@ VOLLUTO = 'Volluto'
 ORDERS_URL = None
 ORDERS_BUMP_URL = None
 LOGIN_URL = None
-
 
 SERVO_PINS = {
     RISTRETTO: 17,
@@ -39,7 +37,6 @@ def drop_capsule(capsule_type: str, count: int):
         sleep(0.5)
 
     servo.close()
-
 
 
 def get_angular_servo(pin_number: int):
@@ -72,11 +69,10 @@ def drop_cups(count: int):
 class CoffeeMachine:
     TOKEN_TIMEOUT_MINUTES = 15
 
-    @staticmethod
-    def _get_token_from_server():
+    async def _get_token_from_server(self):
         print('Login to kds...')
         url = LOGIN_URL
-        res = requests.post(url, json={
+        async with self.client.get(url, json={
             'device': 'web',
             'os': 'os',
             'imei': 'imei',
@@ -88,14 +84,14 @@ class CoffeeMachine:
                 'username': None,
                 'password': None
             }
-        })
-        try:
-            token = json.loads(res.text)["auth"]["access"]
-            print(f'token is: {token}')
-            return token
+        }) as response:
+            try:
+                token = (await response.json())["auth"]["access"]
+                print(f'token is: {token}')
+                return token
 
-        except Exception as err:
-            print(err)
+            except Exception as err:
+                print(err)
 
     def get_token(self):
         if not self._token_timeout_time or datetime.now() > (self._token_timeout_time + timedelta(minutes=self.TOKEN_TIMEOUT_MINUTES)):
@@ -109,24 +105,25 @@ class CoffeeMachine:
         self._token_timeout_time = None
         self.get_token()
         self.orders_black_list = []
+        self.client = aiohttp.ClientSession()
+
+    async def shutdown(self):
+        await self.client.close()
 
     async def get_orders(self):
         print('Getting Orders', end='')
         orders = []
         while not orders:
             print('.', end='')
-            # TODO: maybe move to async
-            res = requests.get(ORDERS_URL,
-                               headers={"Authorization": f"Bearer {self.get_token()}"})
-            if not res:
-                print('Get Orders Failed!')
-                return []
+            async with self.client.get(ORDERS_URL, headers={"Authorization": f"Bearer {self.get_token()}"}) as response:
+                if not response:
+                    print('Get Orders Failed!')
+                    return []
 
-            try:
-                orders = json.loads(res.text)['orders']
-
-            except Exception as err:
-                print(err)
+                try:
+                    orders = (await response.json())['orders']
+                except Exception as err:
+                    print(err)
 
             await asyncio.sleep(POLLING_TIMEOUT)
 
@@ -135,18 +132,16 @@ class CoffeeMachine:
         print(f'Got orders: [{order_ids}]')
         return orders
 
-    @backoff.on_exception(backoff.constant, HTTPError, max_tries=3, interval=1)
+    @backoff.on_exception(backoff.constant, ClientResponseError, max_tries=3, interval=1)
     def bump_order(self, order):
         kds_order_id = order['_id']
-        res = requests.post(ORDERS_BUMP_URL,
-                            json={'kds_order_id': kds_order_id},
-                            headers={"Authorization": f"Bearer {self.get_token()}"})
-        res.raise_for_status()
-        order_id = order['order_id']
-        self.orders_black_list.append(order_id)
-        print(f'Bumping {order_id}')
-        print(res.text)
-        return res
+        async with self.client.get(ORDERS_BUMP_URL,
+                                   json={'kds_order_id': kds_order_id},
+                                   headers={"Authorization": f"Bearer {self.get_token()}"},
+                                   raise_for_status=True):
+            order_id = order['order_id']
+            self.orders_black_list.append(order_id)
+            print(f'Bumping {order_id}')
 
     @staticmethod
     async def drop_capsules_from_order(order):
